@@ -218,6 +218,69 @@ Trend notes:
 - Cap-hit rates were high across all thresholds, especially `1/2` and `3/4`; this explains the long runtime and indicates frequent non-terminating or unproductive reasoning loops.
 - For subsequent runs, throughput settings should be made more aggressive than the conservative 16-concurrency setup, while monitoring for OOM or scheduler instability.
 
+### DeepMath Qwen3-0.6B 100x5 pass@2
+
+Output directory:
+
+`/work/ipsd/ipsd_basic/outputs/pass2_16k_deepmath_qwen3_0p6b_100x5`
+
+Dataset:
+
+`zwhe99/DeepMath-103K`
+
+Model:
+
+`Qwen/Qwen3-0.6B`
+
+Runtime:
+
+- Shell runtime: 27,817.20 seconds, about 7.73 hours
+- `run_summary.elapsed_seconds`: 27,276.11 seconds, about 7.58 hours
+
+Run settings:
+
+- `generation_concurrency`: 40
+- `teacher_gpu_mem_util`: 0.90
+- `student_gpu_mem_util`: 0.90
+
+Raw trace baseline:
+
+- Raw rows scored: 100
+- Avg raw surprisal mean: 0.6837
+- Avg raw entropy mean: 0.5059
+- Raw trace length min / median / mean / max: 894 / 4,520.0 / 5,147.8 / 13,649
+- Context-truncated raw traces: 0/100
+
+Correctness and generated-trace stats:
+
+| ENS threshold | Calibrated ENS | Correct | Pass@2 | Avg trials | Attempts total | Avg teacher accept | Avg trace length | Cap-hit traces | Mean surprisal | Mean entropy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `1/2` | 0.2072 | 52/100 | 0.52 | 1.58 | 158 | 0.532 | 5046.0 | 9 | 0.2919 | 0.5039 |
+| `3/4` | 0.6110 | 51/100 | 0.51 | 1.64 | 164 | 0.867 | 5284.7 | 19 | 0.2332 | 0.4605 |
+| `7/8` | 1.5155 | 67/100 | 0.67 | 1.47 | 147 | 0.972 | 4312.6 | 8 | 0.2646 | 0.4716 |
+| `15/16` | 3.0711 | 79/100 | 0.79 | 1.31 | 131 | 0.990 | 3738.8 | 6 | 0.3034 | 0.4757 |
+| `31/32` | 5.6564 | 80/100 | 0.80 | 1.33 | 133 | 0.994 | 3314.6 | 6 | 0.3216 | 0.4669 |
+
+Attempt distribution:
+
+| ENS threshold | Attempts used distribution | Correct by selected attempt |
+|---|---|---|
+| `1/2` | 1:42 2:58 | 1:42 2:10 |
+| `3/4` | 1:36 2:64 | 1:36 2:15 |
+| `7/8` | 1:53 2:47 | 1:53 2:14 |
+| `15/16` | 1:69 2:31 | 1:69 2:10 |
+| `31/32` | 1:67 2:33 | 1:67 2:13 |
+
+Trend notes:
+
+- DeepMath was much easier than s1k for Qwen3-0.6B pass@2: best DeepMath correctness was 80/100, while best s1k correctness was 23/100.
+- Correctness improved sharply at higher ENS thresholds: 52%, 51%, 67%, 79%, 80%.
+- Average trials fell as thresholds increased through `15/16`, then stayed low at `31/32`: 1.58, 1.64, 1.47, 1.31, 1.33.
+- Teacher acceptance increased monotonically: 0.532, 0.867, 0.972, 0.990, 0.994.
+- High acceptance still did not guarantee correctness: the final-threshold tail contained highly accepted but wrong long traces.
+- Cap-hit counts were far lower than s1k 0.6B, especially at higher thresholds, which explains the shorter runtime.
+- For subsequent runs, use aggressive concurrency first and back off only on OOM or vLLM scheduler instability; the 40-concurrency DeepMath run was stable.
+
 ## 2026-06-09 16k Smoke Tests
 
 Two 16k smoke tests were completed with Qwen3-8B using `ipsd_basic/run_ipsd_basic.py`.
