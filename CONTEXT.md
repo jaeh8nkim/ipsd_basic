@@ -148,6 +148,76 @@ Trend notes:
 - Trace length and cap hits fell as the threshold increased.
 - DeepMath was much easier than s1k on this slice under Qwen3-8B pass@4, and the pass@4 gains after attempt 2 were smaller than the s1k case.
 
+## 2026-06-12 Pass@2 Model Sweep
+
+This section tracks the requested 100x5 pass@2 model-selection runs. Shared intended settings unless noted:
+
+- Examples per threshold: 100
+- Generated IPSD traces per dataset: 500
+- Thresholds: `1/2`, `3/4`, `7/8`, `15/16`, `31/32`
+- Calibration rows: 100
+- `max_seq_len`: 16,384
+- `max_prompt_len`: 6,144
+- `max_gen_len`: 10,240
+- `max_attempts`: 2
+- No correctness filtering is applied to selected traces; correctness is reported.
+
+### s1k Qwen3-0.6B 100x5 pass@2
+
+Output directory:
+
+`/work/ipsd/ipsd_basic/outputs/pass2_16k_s1k_qwen3_0p6b_100x5`
+
+Dataset:
+
+`simplescaling/s1K-1.1_tokenized`
+
+Model:
+
+`Qwen/Qwen3-0.6B`
+
+Runtime:
+
+- Shell runtime: 65,878.58 seconds, about 18.30 hours
+- `run_summary.elapsed_seconds`: 65,006.83 seconds, about 18.06 hours
+
+Raw trace baseline:
+
+- Raw rows scored: 100
+- Avg raw surprisal mean: 1.0964
+- Avg raw entropy mean: 0.6157
+- Raw trace length min / median / mean / max: 1,367 / 9,198.0 / 9,654.7 / 17,908
+- Context-truncated raw traces: 10/100
+
+Correctness and generated-trace stats:
+
+| ENS threshold | Calibrated ENS | Correct | Pass@2 | Avg trials | Attempts total | Avg teacher accept | Avg trace length | Cap-hit traces | Mean surprisal | Mean entropy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `1/2` | 0.2316 | 9/100 | 0.09 | 1.94 | 194 | 0.573 | 7430.6 | 43 | 0.2824 | 0.4857 |
+| `3/4` | 0.7678 | 6/100 | 0.06 | 1.97 | 197 | 0.918 | 7807.7 | 51 | 0.2059 | 0.4169 |
+| `7/8` | 2.0428 | 20/100 | 0.20 | 1.88 | 188 | 0.986 | 7045.1 | 32 | 0.2790 | 0.4715 |
+| `15/16` | 4.1279 | 21/100 | 0.21 | 1.83 | 183 | 0.995 | 6563.6 | 29 | 0.3011 | 0.4680 |
+| `31/32` | 7.6919 | 23/100 | 0.23 | 1.84 | 184 | 0.997 | 6496.8 | 29 | 0.3207 | 0.4707 |
+
+Attempt distribution:
+
+| ENS threshold | Attempts used distribution | Correct by selected attempt |
+|---|---|---|
+| `1/2` | 1:6 2:94 | 1:6 2:3 |
+| `3/4` | 1:3 2:97 | 1:3 2:3 |
+| `7/8` | 1:12 2:88 | 1:12 2:8 |
+| `15/16` | 1:17 2:83 | 1:17 2:4 |
+| `31/32` | 1:16 2:84 | 1:16 2:7 |
+
+Trend notes:
+
+- Qwen3-0.6B was much weaker than Qwen3-8B on the same s1k slice.
+- Correctness improved at higher ENS thresholds but remained low: 9%, 6%, 20%, 21%, 23%.
+- Most selected traces needed the second attempt, and many still failed after pass@2.
+- High teacher acceptance did not imply correctness for 0.6B. At `31/32`, average teacher acceptance was 0.997 but correctness was only 23/100.
+- Cap-hit rates were high across all thresholds, especially `1/2` and `3/4`; this explains the long runtime and indicates frequent non-terminating or unproductive reasoning loops.
+- For subsequent runs, throughput settings should be made more aggressive than the conservative 16-concurrency setup, while monitoring for OOM or scheduler instability.
+
 ## 2026-06-09 16k Smoke Tests
 
 Two 16k smoke tests were completed with Qwen3-8B using `ipsd_basic/run_ipsd_basic.py`.
