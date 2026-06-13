@@ -404,11 +404,44 @@ def token_surprisal_from_logprobs(token_id: int, logprobs_dict: dict[int, Any], 
     return float("inf")
 
 
+def entropy_and_tail_surprisal(logprobs_dict: dict[int, Any], vocab_size: int | None) -> tuple[float, float | None]:
+    logps: list[float] = []
+    for obj in logprobs_dict.values():
+        lp = logprob_value(obj)
+        if math.isfinite(lp):
+            logps.append(lp)
+    probs = [math.exp(lp) for lp in logps]
+    entropy = -sum(p * lp for p, lp in zip(probs, logps)) if logps else 0.0
+    tail = max(0.0, 1.0 - sum(probs))
+    if vocab_size and vocab_size > len(probs) and tail > 0.0:
+        tail_p = tail / (vocab_size - len(probs))
+        entropy += -tail * math.log(tail_p)
+
+    tail_surprisal = None
+    if vocab_size and vocab_size > len(logprobs_dict) and tail > 0.0:
+        tail_surprisal = float(-math.log(tail / (vocab_size - len(logprobs_dict))))
+    return float(entropy), tail_surprisal
+
+
+def token_surprisal_with_tail(
+    token_id: int,
+    logprobs_dict: dict[int, Any],
+    tail_surprisal: float | None,
+) -> float:
+    if token_id in logprobs_dict:
+        return float(-logprob_value(logprobs_dict[token_id]))
+    if tail_surprisal is not None:
+        return tail_surprisal
+    return float("inf")
+
+
+def finite_surprisal(value: float) -> float:
+    return float(value) if math.isfinite(value) else 1e9
+
+
 def metrics_from_logprobs(token_id: int, logprobs_dict: dict[int, Any], vocab_size: int) -> tuple[float, float, float]:
-    surprisal = token_surprisal_from_logprobs(token_id, logprobs_dict, vocab_size)
-    if not math.isfinite(surprisal):
-        surprisal = 1e9
-    entropy = entropy_from_logprobs(logprobs_dict, vocab_size)
+    entropy, tail_surprisal = entropy_and_tail_surprisal(logprobs_dict, vocab_size)
+    surprisal = finite_surprisal(token_surprisal_with_tail(token_id, logprobs_dict, tail_surprisal))
     ens = float(surprisal / (entropy + EPS))
     return float(surprisal), float(entropy), ens
 
@@ -701,6 +734,7 @@ async def generate_ipsd_trace(
         raise RuntimeError(f"student prompt over cap for source_id={row.source_id}: {len(student_context)}")
 
     max_context_len = active_max_model_len(args)
+    vocab_size = len(tokenizer)
     chosen_ids: list[int] = []
     tokens: list[dict[str, Any]] = []
     source_mask: list[int] = []
@@ -752,9 +786,13 @@ async def generate_ipsd_trace(
         student_lp = student_out.logprobs[0] if student_out.logprobs else {}
         teacher_lp = teacher_out.logprobs[0] if teacher_out.logprobs else {}
 
-        teacher_under_student_surprisal, teacher_under_student_entropy, teacher_under_student_ens = (
-            metrics_from_logprobs(teacher_id, student_lp, len(tokenizer))
+        student_entropy, student_tail_surprisal = entropy_and_tail_surprisal(student_lp, vocab_size)
+        _teacher_entropy, teacher_tail_surprisal = entropy_and_tail_surprisal(teacher_lp, vocab_size)
+        teacher_under_student_surprisal = finite_surprisal(
+            token_surprisal_with_tail(teacher_id, student_lp, student_tail_surprisal)
         )
+        teacher_under_student_entropy = student_entropy
+        teacher_under_student_ens = float(teacher_under_student_surprisal / (student_entropy + EPS))
         accepted = teacher_under_student_ens <= threshold_value
         chosen_id = teacher_id if accepted else student_id
         source = "teacher" if accepted else "student"
@@ -763,14 +801,20 @@ async def generate_ipsd_trace(
             chosen_student_entropy = teacher_under_student_entropy
             chosen_student_ens = teacher_under_student_ens
         else:
-            chosen_student_surprisal, chosen_student_entropy, chosen_student_ens = metrics_from_logprobs(
-                chosen_id,
-                student_lp,
-                len(tokenizer),
+            chosen_student_surprisal = finite_surprisal(
+                token_surprisal_with_tail(chosen_id, student_lp, student_tail_surprisal)
             )
-        chosen_teacher_surprisal, _, _ = metrics_from_logprobs(chosen_id, teacher_lp, len(tokenizer))
-        teacher_candidate_teacher_surprisal, _, _ = metrics_from_logprobs(teacher_id, teacher_lp, len(tokenizer))
-        student_candidate_student_surprisal, _, _ = metrics_from_logprobs(student_id, student_lp, len(tokenizer))
+            chosen_student_entropy = student_entropy
+            chosen_student_ens = float(chosen_student_surprisal / (student_entropy + EPS))
+        chosen_teacher_surprisal = finite_surprisal(
+            token_surprisal_with_tail(chosen_id, teacher_lp, teacher_tail_surprisal)
+        )
+        teacher_candidate_teacher_surprisal = finite_surprisal(
+            token_surprisal_with_tail(teacher_id, teacher_lp, teacher_tail_surprisal)
+        )
+        student_candidate_student_surprisal = finite_surprisal(
+            token_surprisal_with_tail(student_id, student_lp, student_tail_surprisal)
+        )
 
         chosen_token = tokenizer.decode([chosen_id], skip_special_tokens=False)
         teacher_token = tokenizer.decode([teacher_id], skip_special_tokens=False)
