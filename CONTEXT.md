@@ -281,6 +281,69 @@ Trend notes:
 - Cap-hit counts were far lower than s1k 0.6B, especially at higher thresholds, which explains the shorter runtime.
 - For subsequent runs, use aggressive concurrency first and back off only on OOM or vLLM scheduler instability; the 40-concurrency DeepMath run was stable.
 
+### s1k Qwen3-1.7B 100x5 pass@2
+
+Output directory:
+
+`/work/ipsd/ipsd_basic/outputs/pass2_16k_s1k_qwen3_1p7b_100x5`
+
+Dataset:
+
+`simplescaling/s1K-1.1_tokenized`
+
+Model:
+
+`Qwen/Qwen3-1.7B`
+
+Runtime:
+
+- Shell runtime: 49,409.32 seconds, about 13.72 hours
+- `run_summary.elapsed_seconds`: 48,188.98 seconds, about 13.39 hours
+
+Run settings:
+
+- `generation_concurrency`: 80
+- `teacher_gpu_mem_util`: 0.90
+- `student_gpu_mem_util`: 0.90
+- This run used the pre-parallel-assessment code path, so generated-trace posthoc scoring ran sequentially on the student engine.
+
+Raw trace baseline:
+
+- Raw rows scored: 100
+- Avg raw surprisal mean: 1.3227
+- Avg raw entropy mean: 0.3247
+- Raw trace length min / median / mean / max: 1,367 / 9,198.0 / 9,654.7 / 17,908
+- Context-truncated raw traces: 10/100
+
+Correctness and generated-trace stats:
+
+| ENS threshold | Calibrated ENS | Correct | Pass@2 | Avg trials | Attempts total | Avg teacher accept | Avg trace length | Cap-hit traces | Mean surprisal | Mean entropy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `1/2` | 0.1250 | 26/100 | 0.26 | 1.78 | 178 | 0.535 | 8238.7 | 44 | 0.1486 | 0.2405 |
+| `3/4` | 0.7083 | 27/100 | 0.27 | 1.81 | 181 | 0.915 | 8095.5 | 41 | 0.1236 | 0.2312 |
+| `7/8` | 6.0189 | 36/100 | 0.36 | 1.68 | 168 | 0.988 | 6886.4 | 26 | 0.1829 | 0.2393 |
+| `15/16` | 22.4925 | 42/100 | 0.42 | 1.66 | 166 | 0.993 | 5790.0 | 15 | 0.2327 | 0.2299 |
+| `31/32` | 96.1969 | 44/100 | 0.44 | 1.62 | 162 | 0.996 | 4942.7 | 11 | 0.2640 | 0.2176 |
+
+Attempt distribution:
+
+| ENS threshold | Attempts used distribution | Correct by selected attempt |
+|---|---|---|
+| `1/2` | 1:22 2:78 | 1:22 2:4 |
+| `3/4` | 1:19 2:81 | 1:19 2:8 |
+| `7/8` | 1:32 2:68 | 1:32 2:4 |
+| `15/16` | 1:34 2:66 | 1:34 2:8 |
+| `31/32` | 1:38 2:62 | 1:38 2:6 |
+
+Trend notes:
+
+- Qwen3-1.7B substantially improved over Qwen3-0.6B on s1k pass@2: best correctness was 44/100 versus 23/100.
+- Correctness increased monotonically with ENS threshold: 26%, 27%, 36%, 42%, 44%.
+- Average trials decreased overall as thresholds increased: 1.78, 1.81, 1.68, 1.66, 1.62.
+- Teacher acceptance increased monotonically: 0.535, 0.915, 0.988, 0.993, 0.996.
+- Cap-hit counts fell monotonically from 44 to 11 as thresholds increased, matching the shorter-trace trend.
+- Even at `31/32`, many wrong traces had very high teacher acceptance, so acceptance is still not a correctness proxy.
+
 ## 2026-06-09 16k Smoke Tests
 
 Two 16k smoke tests were completed with Qwen3-8B using `ipsd_basic/run_ipsd_basic.py`.

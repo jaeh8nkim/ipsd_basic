@@ -95,6 +95,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--allow-missing-answer", action="store_true")
     parser.add_argument("--generation-concurrency", type=int, default=4)
+    parser.add_argument("--assessment-concurrency", type=int, default=8)
+    parser.add_argument(
+        "--assessment-use-both-engines",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use both identical model engines for raw/generated student-prompt scoring. "
+            "This only speeds assessment; generation still uses separate teacher/student roles."
+        ),
+    )
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument("--html-max-records", type=int, default=100)
     return parser.parse_args()
@@ -886,15 +896,27 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 async def assess_raw_traces(
     rows: list[BasicRow],
     student_engine,
+    teacher_engine,
     tokenizer,
     args: argparse.Namespace,
     output_dir: Path,
 ) -> list[dict[str, Any]]:
-    raw_records: list[dict[str, Any]] = []
-    for idx, row in enumerate(rows, start=1):
-        token_ids = tokenizer.encode(row.raw_trace, add_special_tokens=False)
-        print(f"raw assessment {idx}/{len(rows)}: row_index={row.row_index} source_id={row.source_id} tokens={len(token_ids)}", flush=True)
-        score = await score_trace_under_student(row, token_ids, student_engine, tokenizer, args)
+    raw_records: list[dict[str, Any] | None] = [None] * len(rows)
+    score_engines = [student_engine]
+    if args.assessment_use_both_engines:
+        score_engines.append(teacher_engine)
+    sem = asyncio.Semaphore(max(1, int(args.assessment_concurrency)))
+
+    async def score_row(idx: int, row: BasicRow) -> tuple[int, dict[str, Any]]:
+        async with sem:
+            token_ids = tokenizer.encode(row.raw_trace, add_special_tokens=False)
+            engine = score_engines[(idx - 1) % len(score_engines)]
+            print(
+                f"raw assessment start {idx}/{len(rows)}: "
+                f"row_index={row.row_index} source_id={row.source_id} tokens={len(token_ids)}",
+                flush=True,
+            )
+            score = await score_trace_under_student(row, token_ids, engine, tokenizer, args)
         record = {
             "row_index": row.row_index,
             "source_id": row.source_id,
@@ -912,12 +934,27 @@ async def assess_raw_traces(
             "unscored_tokens": score["unscored_tokens"],
             "truncated_by_context": score["truncated_by_context"],
         }
-        raw_records.append(record)
+        return idx, record
+
+    done = 0
+    tasks = [score_row(idx, row) for idx, row in enumerate(rows, start=1)]
+    for task in asyncio.as_completed(tasks):
+        idx, record = await task
+        raw_records[idx - 1] = record
+        done += 1
+        print(
+            f"completed raw assessment {done}/{len(rows)}: "
+            f"row_index={record['row_index']} source_id={record['source_id']} "
+            f"tokens={record['trace_length']}",
+            flush=True,
+        )
+    ordered_records = [record for record in raw_records if record is not None]
+    for record in ordered_records:
         append_jsonl(output_dir / "raw_trace_stats.jsonl", record)
     report = {
-        "rows": len(raw_records),
-        "avg_surprisal_mean": float(np.mean([r["surprisal_stats"]["mean"] for r in raw_records if r["surprisal_stats"]["mean"] is not None])) if raw_records else None,
-        "avg_entropy_mean": float(np.mean([r["entropy_stats"]["mean"] for r in raw_records if r["entropy_stats"]["mean"] is not None])) if raw_records else None,
+        "rows": len(ordered_records),
+        "avg_surprisal_mean": float(np.mean([r["surprisal_stats"]["mean"] for r in ordered_records if r["surprisal_stats"]["mean"] is not None])) if ordered_records else None,
+        "avg_entropy_mean": float(np.mean([r["entropy_stats"]["mean"] for r in ordered_records if r["entropy_stats"]["mean"] is not None])) if ordered_records else None,
         "examples": [
             {
                 "row_index": r["row_index"],
@@ -930,28 +967,36 @@ async def assess_raw_traces(
                 "unscored_tokens": r["unscored_tokens"],
                 "truncated_by_context": r["truncated_by_context"],
             }
-            for r in raw_records
+            for r in ordered_records
         ],
     }
     write_json(output_dir / "raw_trace_report.json", report)
-    return raw_records
+    return ordered_records
 
 
 async def assess_generated_traces(
     results: list[dict[str, Any]],
     row_by_index: dict[int, BasicRow],
     student_engine,
+    teacher_engine,
     tokenizer,
     args: argparse.Namespace,
 ) -> None:
-    for idx, result in enumerate(results, start=1):
-        row = row_by_index[result["row_index"]]
-        print(
-            f"generated assessment {idx}/{len(results)}: threshold={result['threshold_key']} "
-            f"row_index={row.row_index} source_id={row.source_id} tokens={len(result['token_ids'])}",
-            flush=True,
-        )
-        posthoc = await score_trace_under_student(row, result["token_ids"], student_engine, tokenizer, args)
+    score_engines = [student_engine]
+    if args.assessment_use_both_engines:
+        score_engines.append(teacher_engine)
+    sem = asyncio.Semaphore(max(1, int(args.assessment_concurrency)))
+
+    async def score_result(idx: int, result: dict[str, Any]) -> int:
+        async with sem:
+            row = row_by_index[result["row_index"]]
+            engine = score_engines[(idx - 1) % len(score_engines)]
+            print(
+                f"generated assessment start {idx}/{len(results)}: threshold={result['threshold_key']} "
+                f"row_index={row.row_index} source_id={row.source_id} tokens={len(result['token_ids'])}",
+                flush=True,
+            )
+            posthoc = await score_trace_under_student(row, result["token_ids"], engine, tokenizer, args)
         for pos, token_record in enumerate(result["tokens"]):
             if pos < len(posthoc["surprisal"]):
                 token_record["posthoc_student_surprisal"] = posthoc["surprisal"][pos]
@@ -972,6 +1017,14 @@ async def assess_generated_traces(
             "unscored_tokens": posthoc["unscored_tokens"],
             "truncated_by_context": posthoc["truncated_by_context"],
         }
+        return idx
+
+    done = 0
+    tasks = [score_result(idx, result) for idx, result in enumerate(results, start=1)]
+    for task in asyncio.as_completed(tasks):
+        idx = await task
+        done += 1
+        print(f"completed generated assessment {done}/{len(results)}: result_index={idx}", flush=True)
 
 
 def compact_sft_record(result: dict[str, Any]) -> dict[str, Any]:
@@ -1466,7 +1519,7 @@ async def async_main() -> None:
         },
     )
 
-    raw_records = await assess_raw_traces(selected_rows, student_engine, student_tokenizer, args, output_dir)
+    raw_records = await assess_raw_traces(selected_rows, student_engine, teacher_engine, student_tokenizer, args, output_dir)
 
     results: list[dict[str, Any]] = []
     total = len(threshold_keys) * len(selected_rows)
@@ -1542,7 +1595,7 @@ async def async_main() -> None:
             )
 
     row_by_index = {row.row_index: row for row in selected_rows}
-    await assess_generated_traces(results, row_by_index, student_engine, student_tokenizer, args)
+    await assess_generated_traces(results, row_by_index, student_engine, teacher_engine, student_tokenizer, args)
     report = summarize_results(results, thresholds)
     for result in results:
         append_jsonl(output_dir / "sft_traces.jsonl", compact_sft_record(result))
@@ -1564,6 +1617,8 @@ async def async_main() -> None:
             "max_prompt_len": args.max_prompt_len,
             "max_gen_len": args.max_gen_len,
             "generation_concurrency": generation_concurrency,
+            "assessment_concurrency": max(1, int(args.assessment_concurrency)),
+            "assessment_use_both_engines": bool(args.assessment_use_both_engines),
             "max_attempts": max_attempts,
             "html_max_records": args.html_max_records,
             "outputs": {
